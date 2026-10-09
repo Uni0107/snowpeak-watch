@@ -1,0 +1,7 @@
+.venv/
+state.json
+check.log
+__pycache__/
+.ntfy_topic
+HANDOFF.md
+com.user.snowpeak-watch.plist

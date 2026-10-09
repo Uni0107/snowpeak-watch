@@ -1,0 +1,39 @@
+name: snowpeak-watch
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"  # 10分ごと（これより短くしないこと）
+  workflow_dispatch:  # 手動実行ボタン
+
+concurrency:
+  group: snowpeak-watch
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TZ: Asia/Tokyo
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: playwright install --with-deps chromium-headless-shell
+      # 前回の空き状態（state.json）を次回の実行へ引き継ぐ
+      - uses: actions/cache/restore@v4
+        with:
+          path: state.json
+          key: state-${{ github.run_id }}
+          restore-keys: state-
+      - run: python check.py
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: state.json
+          key: state-${{ github.run_id }}
