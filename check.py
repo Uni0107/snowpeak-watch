@@ -13,6 +13,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import urllib.request
 from datetime import date, datetime
 from pathlib import Path
@@ -36,6 +37,7 @@ SITES = [
 ]
 TARGET_DATES = [date(2026, 11, 22), date(2026, 11, 28)]
 STOP_AFTER = date(2026, 11, 28)  # この日を過ぎたら何もしない
+INTERVAL_MINUTES = 10  # 確認の間隔（10分未満にしないこと）
 FAILURE_NOTIFY_AT = 3  # 連続でこの回数失敗したら一度だけ知らせる
 
 HERE = Path(__file__).resolve().parent
@@ -135,12 +137,8 @@ def save_state(state):
     STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def main():
-    if date.today() > STOP_AFTER:
-        log("監視期間が終了しています。定期実行を解除してください。")
-        return 0
-
-    state = load_state()
+def check_once(state):
+    """全サイトを1回確認し、新しい状態を返す。"""
     previous = state.get("statuses", {})
     current = {}
     failed = False
@@ -151,12 +149,22 @@ def main():
             page = browser.new_page(locale="ja-JP")
             for site in SITES:
                 name, url = site["name"], site["url"]
-                try:
-                    statuses = fetch_statuses(page, url)
-                except Exception as e:  # ネットワーク不調やページ構造の変更など
+                statuses = None
+                for attempt in range(2):  # 一時的な不調に備えて1回だけやり直す
+                    try:
+                        statuses = fetch_statuses(page, url)
+                        break
+                    except Exception as e:  # ネットワーク不調・メンテナンス・ページ構造の変更など
+                        try:
+                            title = page.title()
+                        except Exception:
+                            title = "?"
+                        log(f"[{name}] 取得失敗（{attempt + 1}回目, ページ名: {title!r}）: {e!r}"[:500])
+                        if attempt == 0:
+                            time.sleep(30)
+                if statuses is None:
                     failed = True
                     current[name] = previous.get(name, {})  # 前回の状態を引き継ぐ
-                    log(f"[{name}] 取得失敗: {e!r}")
                     continue
 
                 current[name] = statuses
@@ -183,8 +191,25 @@ def main():
     failures = state.get("failures", 0) + 1 if failed else 0
     if failures == FAILURE_NOTIFY_AT:
         notify("スノーピーク監視エラー", "空き状況を連続で取得できていません。ログを確認してください。")
-    save_state({"statuses": current, "failures": failures, "checked_at": datetime.now().isoformat(timespec="seconds")})
-    return 1 if failed else 0
+    return {"statuses": current, "failures": failures, "checked_at": datetime.now().isoformat(timespec="seconds")}
+
+
+def main():
+    # --loop 分数: その時間のあいだ INTERVAL_MINUTES ごとに確認を繰り返す（GitHub Actions 用）
+    loop_minutes = int(sys.argv[sys.argv.index("--loop") + 1]) if "--loop" in sys.argv else 0
+    deadline = time.monotonic() + loop_minutes * 60
+
+    while True:
+        if date.today() > STOP_AFTER:
+            log("監視期間が終了しています。定期実行を解除してください。")
+            return 0
+        started = time.monotonic()
+        state = check_once(load_state())
+        save_state(state)
+        next_run = started + INTERVAL_MINUTES * 60
+        if next_run > deadline:
+            return 0
+        time.sleep(max(0, next_run - time.monotonic()))
 
 
 if __name__ == "__main__":

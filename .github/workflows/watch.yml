@@ -1,18 +1,25 @@
 name: snowpeak-watch
 
+# GitHub の定期実行（schedule）は数時間に1回しか動かないことがあるため、
+# 1回の実行の中で約5時間半、10分ごとに確認を繰り返し、終わる直前に次の実行を自分で起動する。
+# schedule は、この連鎖が何かの理由で途切れたときの再開用。
 on:
   schedule:
-    - cron: "*/10 * * * *"  # 10分ごと（これより短くしないこと）
+    - cron: "17 * * * *"
   workflow_dispatch:  # 手動実行ボタン
 
 concurrency:
   group: snowpeak-watch
   cancel-in-progress: false
 
+permissions:
+  contents: read
+  actions: write  # 次の実行を起動するため
+
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 360
     env:
       TZ: Asia/Tokyo
     steps:
@@ -29,7 +36,7 @@ jobs:
           path: state.json
           key: state-${{ github.run_id }}
           restore-keys: state-
-      - run: python check.py
+      - run: python check.py --loop 330
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
       - uses: actions/cache/save@v4
@@ -37,3 +44,8 @@ jobs:
         with:
           path: state.json
           key: state-${{ github.run_id }}
+      - name: 次の実行を起動
+        if: always()
+        run: gh workflow run snowpeak-watch --ref main
+        env:
+          GH_TOKEN: ${{ github.token }}
